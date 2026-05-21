@@ -257,7 +257,8 @@ def split_overpassing_lines(lines, buses, distance_crs=DISTANCE_CRS, tol=1):
     lines_to_split = []
 
     # TODO: In first draft, skip line splitting for lower voltage levels
-    high_voltage_lines = lines.query("voltage >= 220000")
+    #high_voltage_lines = lines.query("voltage >= 220000")
+    high_voltage_lines = lines.query("voltage >= 60000")
     if high_voltage_lines.empty:
         return lines
 
