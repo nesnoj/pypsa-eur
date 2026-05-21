@@ -431,8 +431,9 @@ conventional:
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#lines
 lines:
   types:
-    63.0: "94-AL1/15-ST1A 20.0"
-    66.0: "94-AL1/15-ST1A 20.0"
+    60.0: "94-AL1/15-ST1A 110.0"
+    63.0: "94-AL1/15-ST1A 110.0"
+    66.0: "94-AL1/15-ST1A 110.0"
     90.0: "184-AL1/30-ST1A 110.0"
     110.0: "184-AL1/30-ST1A 110.0"
     132.0: "243-AL1/39-ST1A 110.0"
