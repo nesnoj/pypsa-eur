@@ -1,3 +1,5 @@
+# Electricity grid extraction for eGon-data for 60..400 kV
+
 <!--
 SPDX-FileCopyrightText: Contributors to PyPSA-Eur <https://github.com/pypsa/pypsa-eur>
 SPDX-License-Identifier: CC-BY-4.0
