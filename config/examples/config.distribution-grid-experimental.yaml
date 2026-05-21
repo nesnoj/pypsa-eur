@@ -46,6 +46,7 @@ countries:
 electricity:
   voltages: [63., 66., 90., 110., 132., 150., 220., 300., 330., 380., 400., 500., 750.]
   base_network: osm
+  osm_remove_rail_systems: true
 
 transmission_projects:
   enable: false

@@ -461,6 +461,7 @@ def _import_lines_and_cables(path_lines):
         "construction",
         "construction:power",
         "start_date",
+        "operator",
     ]
     df_lines = pd.DataFrame(columns=columns)
 
@@ -493,6 +494,7 @@ def _import_lines_and_cables(path_lines):
                     "construction",
                     "construction:power",
                     "start_date",
+                    "operator",
                 ]
 
                 tags = pd.json_normalize(df["tags"]).map(
@@ -538,6 +540,7 @@ def _import_routes_relation(path_relation):
         "construction",
         "construction:power",
         "start_date",
+        "operator",
     ]
     df_relation = pd.DataFrame(columns=columns)
 
@@ -571,6 +574,7 @@ def _import_routes_relation(path_relation):
                     "construction",
                     "construction:power",
                     "start_date",
+                    "operator",
                 ]
 
                 tags = pd.json_normalize(df["tags"]).map(
@@ -827,6 +831,53 @@ def _clean_substations(df_substations, list_voltages):
     df_substations.loc[bool_invalid_frequency, "frequency"] = "50"
 
     return df_substations
+
+
+def _remove_rail_systems(df_assets):
+    """
+    Clean asset data (substations, lines) by removing elements associated with
+    rail transport by using these criteria:
+    - Frequency: 16.7 Hz
+    - Operator name (Germany only) like DB Energie, DB Netz, ...
+
+    Both must be fulfilled as some non-rail lines are mapped with DB Energie.
+
+    Parameters
+    ----------
+    df_assets : pandas.DataFrame
+        The input dataframe containing substation data.
+
+    Returns
+    -------
+    pandas.DataFrame
+        The cleaned substation dataframe.
+
+    TODO: Extend operator names by those from other countries
+    """
+    df_assets = df_assets.copy()
+
+    mask_rail_transport = (
+        # (df_assets["frequency"].str.contains("16.")) |
+        (df_assets["frequency"] == "16.7")
+        & (
+            df_assets["operator"].str.contains(
+                r"DB[\s_]?(?:Energie|Netz)(?:\s+(?:GmbH|AG))?",
+                case=False,
+                na=False,
+                regex=True,
+            )
+        )
+    )
+    len_before = len(df_assets)
+    df_assets = df_assets.loc[~mask_rail_transport]
+    len_after = len(df_assets)
+
+    logger.info(
+        f"Dropped {len_before - len_after} elements with supposed function "
+        f"for railway traffic. Keeping {len_after} elements."
+    )
+
+    return df_assets
 
 
 def _clean_lines(df_lines, list_voltages):
@@ -1417,6 +1468,7 @@ def _import_substations(path_substations):
         "construction",
         "construction:power",
         "start_date",
+        "operator",
     ]
     cols_substations_relation = [
         "id",
@@ -1428,6 +1480,7 @@ def _import_substations(path_substations):
         "construction",
         "construction:power",
         "start_date",
+        "operator",
     ]
     df_substations_way = pd.DataFrame(columns=cols_substations_way)
     df_substations_relation = pd.DataFrame(columns=cols_substations_relation)
@@ -1464,6 +1517,7 @@ def _import_substations(path_substations):
                     "construction",
                     "construction:power",
                     "start_date",
+                    "operator",
                 ]
 
                 tags = pd.json_normalize(df["tags"]).map(
@@ -1818,6 +1872,10 @@ if __name__ == "__main__":
         df_substations, min_voltage=min_voltage_ac
     )
     df_substations["frequency"] = _clean_frequency(df_substations["frequency"])
+
+    if snakemake.params.osm_remove_rail_systems:
+        df_substations = _remove_rail_systems(df_substations)
+
     df_substations = _clean_substations(df_substations, list_voltages)
     df_substations = _create_substations_geometry(df_substations)
 
