@@ -919,6 +919,7 @@ rule clean_osm_data:
         mem_mb=4000,
     params:
         voltages=config_provider("electricity", "voltages"),
+        osm_remove_rail_systems=config_provider("electricity", "osm_remove_rail_systems"),
     message:
         "Cleaning raw OSM data for countries: " + ", ".join(config["countries"])
     script:
