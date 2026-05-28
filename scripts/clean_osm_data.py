@@ -901,6 +901,36 @@ def _remove_rail_systems(df_assets, asset_label="assets"):
     has_pure_rail_freq = freq.eq("16.7")
     mask_rail_transport = has_pure_rail_freq & has_rail_operator
 
+    debug_cols = [c for c in ["id", "operator", "operator:2", "frequency", "voltage", "name", "geometry"] if
+                  c in df_assets.columns]
+    rail_assets = df_assets.loc[mask_rail_transport, debug_cols].copy()
+
+    rail_assets.to_csv(
+        f"resources/distribution-grid-experimental/osm/clean/dropped_rail_assets_{asset_label}.csv",
+        index=False,
+    )
+
+    if len(rail_assets) > 0 and "geometry" in rail_assets.columns:
+        if asset_label == "substations":
+            gdf_rail_assets = gpd.GeoDataFrame(
+                rail_assets.copy(), geometry="geometry", crs=crs
+            )
+            gdf_rail_assets.to_file(
+                f"resources/distribution-grid-experimental/osm/clean/dropped_rail_assets_{asset_label}.geojson",
+                driver="GeoJSON",
+            )
+
+        elif asset_label == "lines":
+            rail_assets_geo = rail_assets.copy()
+            rail_assets_geo["geometry"] = rail_assets_geo.apply(_create_linestring, axis=1)
+            gdf_rail_assets = gpd.GeoDataFrame(
+                rail_assets_geo, geometry="geometry", crs=crs
+            )
+            gdf_rail_assets.to_file(
+                f"resources/distribution-grid-experimental/osm/clean/dropped_rail_assets_{asset_label}.geojson",
+                driver="GeoJSON",
+            )
+
     len_before = len(df_assets)
     df_assets = df_assets.loc[~mask_rail_transport].copy()
     len_after = len(df_assets)
