@@ -919,7 +919,8 @@ rule clean_osm_data:
         mem_mb=4000,
     params:
         voltages=config_provider("electricity", "voltages"),
-        osm_remove_rail_systems=config_provider("electricity", "osm_remove_rail_systems"),
+        osm_remove_rail_systems=config_provider("electricity","osm_remove_rail_systems"),
+        osm_flag_shared_rail_corridors=config_provider("electricity","osm_flag_shared_rail_corridors"),
     message:
         "Cleaning raw OSM data for countries: " + ", ".join(config["countries"])
     script:

@@ -36,6 +36,17 @@ BUS_TOL = (
     500  # unit: meters, default 5000 - Buses within this distance are grouped together
 )
 
+RAIL_OPERATOR_PATTERNS = [
+    r"DB[\s_]?(?:Energie|Netz)(?:\s+(?:GmbH|AG))?",
+    r"ÖBB",
+    r"OEBB",
+    r"Österreichische Bundesbahnen",
+    r"SBB",
+    r"Schweizerische Bundesbahnen",
+    r"BLS",
+]
+
+RAIL_OPERATOR_REGEX = "|".join(f"(?:{p})" for p in RAIL_OPERATOR_PATTERNS)
 
 def _create_linestring(row):
     """
@@ -405,6 +416,70 @@ def _split_cells(df, cols=["voltage"]):
     return x
 
 
+def _expand_multi_voltage_corridors(df, id_col="id"):
+    """
+        Expand multi-voltage corridor assets into one row per voltage system.
+
+        Example:
+        voltage = "220000;110000", circuits = "2"
+        -> two rows with one circuit each
+
+        If circuits are ambiguous, keep one row per voltage and export the original
+        row for manual review.
+        """
+    def _safe_str(value):
+        return "" if pd.isna(value) else str(value)
+
+    df = df.copy()
+
+    out_rows = []
+    ambiguous_rows = []
+
+    for _, row in df.iterrows():
+        voltage = _safe_str(row.get("voltage", ""))
+        circuits = _safe_str(row.get("circuits", ""))
+
+        voltages = [v for v in voltage.split(";") if v]
+        circuits_list = [c for c in circuits.split(";") if c]
+
+        if len(voltages) <= 1:
+            out_rows.append(row.to_dict())
+            continue
+
+        if len(circuits_list) == len(voltages):
+            circuits_per_voltage = circuits_list
+        elif len(circuits_list) == 1 and circuits_list[0].isdigit():
+            total = int(circuits_list[0])
+            if total == len(voltages):
+                circuits_per_voltage = ["1"] * len(voltages)
+            else:
+                base = max(1, total // len(voltages))
+                circuits_per_voltage = [str(base)] * len(voltages)
+                ambiguous_rows.append(row.to_dict())
+        else:
+            circuits_per_voltage = ["1"] * len(voltages)
+            ambiguous_rows.append(row.to_dict())
+
+        original_id = row[id_col]
+        for i, (v, c) in enumerate(zip(voltages, circuits_per_voltage), start=1):
+            new_row = row.copy()
+            new_row["corridor_id"] = original_id
+            new_row[id_col] = f"{original_id}__sys{i}"
+            new_row["voltage"] = v
+            new_row["circuits"] = c
+            out_rows.append(new_row.to_dict())
+
+    out = pd.DataFrame(out_rows)
+
+    if ambiguous_rows:
+        pd.DataFrame(ambiguous_rows).to_csv(
+            "resources/distribution-grid-experimental/osm/clean/debug_ambiguous_multi_voltage_corridors.csv",
+            index=False,
+        )
+
+    return out
+
+
 def _distribute_to_circuits(row):
     """
     Distributes the number of circuits or cables to individual circuits based
@@ -462,6 +537,10 @@ def _import_lines_and_cables(path_lines):
         "construction:power",
         "start_date",
         "operator",
+        "operator:2",
+        "name",
+        "name:2",
+        "note",
     ]
     df_lines = pd.DataFrame(columns=columns)
 
@@ -495,6 +574,10 @@ def _import_lines_and_cables(path_lines):
                     "construction:power",
                     "start_date",
                     "operator",
+                    "operator:2",
+                    "name",
+                    "name:2",
+                    "note",
                 ]
 
                 tags = pd.json_normalize(df["tags"]).map(
@@ -541,6 +624,10 @@ def _import_routes_relation(path_relation):
         "construction:power",
         "start_date",
         "operator",
+        "operator:2",
+        "name",
+        "name:2",
+        "note",
     ]
     df_relation = pd.DataFrame(columns=columns)
 
@@ -575,6 +662,10 @@ def _import_routes_relation(path_relation):
                     "construction:power",
                     "start_date",
                     "operator",
+                    "operator:2",
+                    "name",
+                    "name:2",
+                    "note",
                 ]
 
                 tags = pd.json_normalize(df["tags"]).map(
@@ -833,7 +924,7 @@ def _clean_substations(df_substations, list_voltages):
     return df_substations
 
 
-def _remove_rail_systems(df_assets):
+def _remove_rail_systems(df_assets, asset_label="assets"):
     """
     Clean asset data (substations, lines) by removing elements associated with
     rail transport by using these criteria:
@@ -856,25 +947,149 @@ def _remove_rail_systems(df_assets):
     """
     df_assets = df_assets.copy()
 
-    mask_rail_transport = (
-        # (df_assets["frequency"].str.contains("16.")) |
-        (df_assets["frequency"] == "16.7")
-        & (
-            df_assets["operator"].str.contains(
-                r"DB[\s_]?(?:Energie|Netz)(?:\s+(?:GmbH|AG))?",
-                case=False,
-                na=False,
-                regex=True,
-            )
+    if "frequency" not in df_assets.columns or "operator" not in df_assets.columns:
+        logger.warning(
+            f"Skipping railway filtering for {asset_label}: required columns missing."
         )
+        return df_assets
+
+    op1 = df_assets.get("operator", pd.Series("", index=df_assets.index)).fillna("").astype(str)
+    op2 = df_assets.get("operator:2", pd.Series("", index=df_assets.index)).fillna("").astype(str)
+    freq = df_assets.get("frequency", pd.Series("", index=df_assets.index)).fillna("").astype(str)
+
+    has_rail_operator = (
+            op1.str.contains(RAIL_OPERATOR_REGEX, case=False, na=False, regex=True)
+            | op2.str.contains(RAIL_OPERATOR_REGEX, case=False, na=False, regex=True)
     )
+
+    has_pure_rail_freq = freq.eq("16.7")
+    mask_rail_transport = has_pure_rail_freq & has_rail_operator
+
+    debug_cols = [c for c in ["id", "operator", "operator:2", "frequency", "voltage", "name", "geometry"] if
+                  c in df_assets.columns]
+    rail_assets = df_assets.loc[mask_rail_transport, debug_cols].copy()
+
+    rail_assets.to_csv(
+        f"resources/distribution-grid-experimental/osm/clean/dropped_rail_assets_{asset_label}.csv",
+        index=False,
+    )
+
+    if len(rail_assets) > 0 and "geometry" in rail_assets.columns:
+        if asset_label == "substations":
+            gdf_rail_assets = gpd.GeoDataFrame(
+                rail_assets.copy(), geometry="geometry", crs=crs
+            )
+            gdf_rail_assets.to_file(
+                f"resources/distribution-grid-experimental/osm/clean/dropped_rail_assets_{asset_label}.geojson",
+                driver="GeoJSON",
+            )
+
+        elif asset_label == "lines":
+            rail_assets_geo = rail_assets.copy()
+            rail_assets_geo["geometry"] = rail_assets_geo.apply(_create_linestring, axis=1)
+            gdf_rail_assets = gpd.GeoDataFrame(
+                rail_assets_geo, geometry="geometry", crs=crs
+            )
+            gdf_rail_assets.to_file(
+                f"resources/distribution-grid-experimental/osm/clean/dropped_rail_assets_{asset_label}.geojson",
+                driver="GeoJSON",
+            )
+
     len_before = len(df_assets)
-    df_assets = df_assets.loc[~mask_rail_transport]
+    df_assets = df_assets.loc[~mask_rail_transport].copy()
     len_after = len(df_assets)
 
     logger.info(
         f"Dropped {len_before - len_after} elements with supposed function "
-        f"for railway traffic. Keeping {len_after} elements."
+        f"for railway traffic in {asset_label}. Keeping {len_after} elements."
+    )
+
+    return df_assets
+
+
+def _flag_shared_rail_corridors(df_assets, asset_label="assets"):
+    """
+    Flag assets that look like shared public/railway corridors.
+    This does NOT remove the assets. It only exports them for review.
+    """
+    df_assets = df_assets.copy()
+
+    freq = (
+        df_assets.get("frequency", pd.Series("", index=df_assets.index))
+        .fillna("")
+        .astype(str)
+    )
+    op1 = (
+        df_assets.get("operator", pd.Series("", index=df_assets.index))
+        .fillna("")
+        .astype(str)
+    )
+    op2 = (
+        df_assets.get("operator:2", pd.Series("", index=df_assets.index))
+        .fillna("")
+        .astype(str)
+    )
+
+    has_rail_freq = freq.str.contains(r"(?:^|;)16\.7(?:$|;)", regex=True)
+    has_grid_freq = freq.str.contains(r"(?:^|;)50(?:$|;)", regex=True)
+
+    has_rail_operator = (
+        op1.str.contains(RAIL_OPERATOR_REGEX, case=False, na=False, regex=True)
+        | op2.str.contains(RAIL_OPERATOR_REGEX, case=False, na=False, regex=True)
+    )
+
+    has_non_rail_operator = (
+        ((op1 != "") & ~op1.str.contains(RAIL_OPERATOR_REGEX, case=False, na=False, regex=True))
+        | ((op2 != "") & ~op2.str.contains(RAIL_OPERATOR_REGEX, case=False, na=False, regex=True))
+    )
+
+    mask_shared = (has_rail_freq & has_grid_freq) | (
+        has_rail_operator & has_non_rail_operator
+    )
+
+    debug_cols = [
+        c
+        for c in [
+            "id",
+            "operator",
+            "operator:2",
+            "frequency",
+            "voltage",
+            "circuits",
+            "cables",
+            "name",
+            "name:2",
+            "note",
+            "geometry",
+        ]
+        if c in df_assets.columns
+    ]
+
+    shared_assets = df_assets.loc[mask_shared, debug_cols].copy()
+
+    shared_assets.to_csv(
+        f"resources/distribution-grid-experimental/osm/clean/shared_rail_corridors_{asset_label}.csv",
+        index=False,
+    )
+
+    if len(shared_assets) > 0 and "geometry" in shared_assets.columns:
+        if asset_label == "substations":
+            gdf = gpd.GeoDataFrame(shared_assets.copy(), geometry="geometry", crs=crs)
+            gdf.to_file(
+                f"resources/distribution-grid-experimental/osm/clean/shared_rail_corridors_{asset_label}.geojson",
+                driver="GeoJSON",
+            )
+        elif asset_label == "lines":
+            shared_geo = shared_assets.copy()
+            shared_geo["geometry"] = shared_geo.apply(_create_linestring, axis=1)
+            gdf = gpd.GeoDataFrame(shared_geo, geometry="geometry", crs=crs)
+            gdf.to_file(
+                f"resources/distribution-grid-experimental/osm/clean/shared_rail_corridors_{asset_label}.geojson",
+                driver="GeoJSON",
+            )
+
+    logger.info(
+        f"Flagged {len(shared_assets)} shared public/rail corridor elements in {asset_label}."
     )
 
     return df_assets
@@ -1641,7 +1856,6 @@ def _remove_lines_within_substations(gdf_lines, gdf_substations_polygon):
 
     return gdf_lines
 
-
 def _merge_touching_polygons(df):
     """
     Merge touching polygons in a GeoDataFrame.
@@ -1873,8 +2087,8 @@ if __name__ == "__main__":
     )
     df_substations["frequency"] = _clean_frequency(df_substations["frequency"])
 
-    if snakemake.params.osm_remove_rail_systems:
-        df_substations = _remove_rail_systems(df_substations)
+    if getattr(snakemake.params, "osm_remove_rail_systems", False):
+        df_substations = _remove_rail_systems(df_substations, asset_label="substations")
 
     df_substations = _clean_substations(df_substations, list_voltages)
     df_substations = _create_substations_geometry(df_substations)
@@ -1951,15 +2165,31 @@ if __name__ == "__main__":
     df_lines_cables_relation.loc[:, "voltage"] = _clean_voltage(
         df_lines_cables_relation["voltage"]
     )
+
+    df_lines_cables_relation = _expand_multi_voltage_corridors(
+        df_lines_cables_relation, id_col="id"
+    )
+
     df_lines_cables_relation, list_voltages = _filter_by_voltage(
         df_lines_cables_relation, min_voltage=min_voltage_ac
     )
     df_lines_cables_relation.loc[:, "frequency"] = _clean_frequency(
         df_lines_cables_relation["frequency"]
     )
+
+    if getattr(snakemake.params, "osm_remove_rail_systems", False):
+        df_lines_cables_relation = _remove_rail_systems(
+            df_lines_cables_relation, asset_label="line_relations"
+        )
+
+    if getattr(snakemake.params, "osm_flag_shared_rail_corridors", False):
+        df_lines_cables_relation = _flag_shared_rail_corridors(
+            df_lines_cables_relation, asset_label="line_relations"
+        )
+
     df_lines_cables_relation = df_lines_cables_relation[
         df_lines_cables_relation["frequency"] != "0"
-    ]
+        ]
     df_lines_cables_relation["frequency"] = "50"
     df_lines_cables_relation.loc[:, "circuits"] = _clean_circuits(
         df_lines_cables_relation["circuits"]
@@ -2011,9 +2241,25 @@ if __name__ == "__main__":
             lambda x: x.geom_type == "LineString"
         )
     ]
-    ways_to_replace = pd.Series(
-        itertools.chain(*df_lines_cables_relation["contains"])
-    ).unique()
+    relation_way_voltage_map = (
+        df_lines_cables_relation[["contains", "voltage"]]
+        .explode("contains")
+        .rename(columns={"contains": "member_way"})
+        .dropna(subset=["member_way", "voltage"])
+        .copy()
+    )
+
+    relation_way_voltage_map["member_way"] = relation_way_voltage_map["member_way"].astype(str)
+    relation_way_voltage_map["voltage"] = relation_way_voltage_map["voltage"].astype(int)
+
+    relation_way_voltage_pairs = set(
+        zip(
+            relation_way_voltage_map["member_way"],
+            relation_way_voltage_map["voltage"],
+        )
+    )
+
+    ways_to_replace = relation_way_voltage_map["member_way"].unique()
 
     df_lines_cables_relation.rename(columns={"id": "line_id"}, inplace=True)
     df_lines_cables_relation = df_lines_cables_relation[
@@ -2047,16 +2293,8 @@ if __name__ == "__main__":
     df_lines = _drop_duplicate_lines(df_lines)
 
     # Dropping
-    len_before = len(df_lines)
-    connection_type = (
-        df_lines[df_lines["id"].isin(ways_to_replace)].set_index("id")["power"].copy()
-    )
-    df_lines = df_lines[~df_lines["id"].isin(ways_to_replace)]
-    len_after = len(df_lines)
-    logger.info(
-        f"Dropping {len_before - len_after} OSM ways (AC lines and cables) for their parent OSM relations."
-    )
-
+    # Keep original power info for relation underground mapping
+    connection_type = df_lines.set_index("id")["power"].copy()
     # Cleaning process
     df_lines.loc[:, "voltage"] = _clean_voltage(df_lines["voltage"])
     # Clean dates and construction status
@@ -2067,12 +2305,41 @@ if __name__ == "__main__":
     )
     df_lines["start_date"] = _clean_date(df_lines["start_date"])
     df_lines, list_voltages = _filter_by_voltage(df_lines, min_voltage=min_voltage_ac)
+    df_lines = _expand_multi_voltage_corridors(df_lines, id_col="id")
     df_lines.loc[:, "circuits"] = _clean_circuits(df_lines["circuits"])
     df_lines.loc[:, "cables"] = _clean_cables(df_lines["cables"])
     df_lines.loc[:, "frequency"] = _clean_frequency(df_lines["frequency"])
+
+    if getattr(snakemake.params, "osm_remove_rail_systems", False):
+        df_lines = _remove_rail_systems(df_lines, asset_label="lines")
+
+    if getattr(snakemake.params, "osm_flag_shared_rail_corridors", False):
+        df_lines = _flag_shared_rail_corridors(df_lines, asset_label="lines")
+
     df_lines.loc[:, "wires"] = _clean_wires(df_lines["wires"])
 
     df_lines = _clean_lines(df_lines, list_voltages)
+
+    df_lines["member_way_id"] = df_lines["id"].astype(str).str.split("-").str[0]
+    df_lines["voltage_int"] = pd.to_numeric(df_lines["voltage"], errors="coerce").astype("Int64")
+
+    mask_replaced_by_relation = df_lines.apply(
+        lambda row: (
+                pd.notna(row["voltage_int"])
+                and (row["member_way_id"], int(row["voltage_int"])) in relation_way_voltage_pairs
+        ),
+        axis=1,
+    )
+
+    len_before = len(df_lines)
+    df_lines = df_lines.loc[~mask_replaced_by_relation].copy()
+    len_after = len(df_lines)
+
+    logger.info(
+        f"Dropped {len_before - len_after} OSM way-voltage rows covered by parent OSM relations."
+    )
+
+    df_lines.drop(columns=["member_way_id", "voltage_int"], inplace=True)
 
     # Drop DC lines, will be added through relations later
     len_before = len(df_lines)
