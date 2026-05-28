@@ -36,6 +36,17 @@ BUS_TOL = (
     500  # unit: meters, default 5000 - Buses within this distance are grouped together
 )
 
+RAIL_OPERATOR_PATTERNS = [
+    r"DB[\s_]?(?:Energie|Netz)(?:\s+(?:GmbH|AG))?",
+    r"ÖBB",
+    r"OEBB",
+    r"Österreichische Bundesbahnen",
+    r"SBB",
+    r"Schweizerische Bundesbahnen",
+    r"BLS",
+]
+
+RAIL_OPERATOR_REGEX = "|".join(f"(?:{p})" for p in RAIL_OPERATOR_PATTERNS)
 
 def _create_linestring(row):
     """
@@ -462,6 +473,10 @@ def _import_lines_and_cables(path_lines):
         "construction:power",
         "start_date",
         "operator",
+        "operator:2",
+        "name",
+        "name:2",
+        "note",
     ]
     df_lines = pd.DataFrame(columns=columns)
 
@@ -495,6 +510,10 @@ def _import_lines_and_cables(path_lines):
                     "construction:power",
                     "start_date",
                     "operator",
+                    "operator:2",
+                    "name",
+                    "name:2",
+                    "note",
                 ]
 
                 tags = pd.json_normalize(df["tags"]).map(
@@ -541,6 +560,10 @@ def _import_routes_relation(path_relation):
         "construction:power",
         "start_date",
         "operator",
+        "operator:2",
+        "name",
+        "name:2",
+        "note",
     ]
     df_relation = pd.DataFrame(columns=columns)
 
@@ -575,6 +598,10 @@ def _import_routes_relation(path_relation):
                     "construction:power",
                     "start_date",
                     "operator",
+                    "operator:2",
+                    "name",
+                    "name:2",
+                    "note",
                 ]
 
                 tags = pd.json_normalize(df["tags"]).map(
@@ -856,25 +883,31 @@ def _remove_rail_systems(df_assets, asset_label="assets"):
     """
     df_assets = df_assets.copy()
 
-    mask_rail_transport = (
-        # (df_assets["frequency"].str.contains("16.")) |
-        (df_assets["frequency"] == "16.7")
-        & (
-            df_assets["operator"].str.contains(
-                r"DB[\s_]?(?:Energie|Netz)(?:\s+(?:GmbH|AG))?",
-                case=False,
-                na=False,
-                regex=True,
-            )
+    if "frequency" not in df_assets.columns or "operator" not in df_assets.columns:
+        logger.warning(
+            f"Skipping railway filtering for {asset_label}: required columns missing."
         )
+        return df_assets
+
+    op1 = df_assets.get("operator", pd.Series("", index=df_assets.index)).fillna("").astype(str)
+    op2 = df_assets.get("operator:2", pd.Series("", index=df_assets.index)).fillna("").astype(str)
+    freq = df_assets.get("frequency", pd.Series("", index=df_assets.index)).fillna("").astype(str)
+
+    has_rail_operator = (
+            op1.str.contains(RAIL_OPERATOR_REGEX, case=False, na=False, regex=True)
+            | op2.str.contains(RAIL_OPERATOR_REGEX, case=False, na=False, regex=True)
     )
+
+    has_pure_rail_freq = freq.eq("16.7")
+    mask_rail_transport = has_pure_rail_freq & has_rail_operator
+
     len_before = len(df_assets)
-    df_assets = df_assets.loc[~mask_rail_transport]
+    df_assets = df_assets.loc[~mask_rail_transport].copy()
     len_after = len(df_assets)
 
     logger.info(
         f"Dropped {len_before - len_after} elements with supposed function "
-        f"for railway traffic. Keeping {len_after} elements."
+        f"for railway traffic in {asset_label}. Keeping {len_after} elements."
     )
 
     return df_assets
