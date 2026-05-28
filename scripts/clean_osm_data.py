@@ -916,19 +916,7 @@ def _remove_rail_systems(df_assets, asset_label="assets"):
 def _flag_shared_rail_corridors(df_assets, asset_label="assets"):
     """
     Flag assets that look like shared public/railway corridors.
-
     This does NOT remove the assets. It only exports them for review.
-
-    Shared corridor heuristics:
-    - mixed frequency, e.g. 50;16.7
-    - railway operator in one operator field and non-rail operator in another
-
-    Expected optional columns:
-    - operator
-    - operator:2
-    - frequency
-    - geometry
-    - id, voltage, circuits, cables, name, name:2, note
     """
     df_assets = df_assets.copy()
 
@@ -2095,6 +2083,11 @@ if __name__ == "__main__":
             df_lines_cables_relation, asset_label="line_relations"
         )
 
+    if getattr(snakemake.params, "osm_flag_shared_rail_corridors", False):
+        df_lines_cables_relation = _flag_shared_rail_corridors(
+            df_lines_cables_relation, asset_label="line_relations"
+        )
+
     df_lines_cables_relation = df_lines_cables_relation[
         df_lines_cables_relation["frequency"] != "0"
         ]
@@ -2211,6 +2204,9 @@ if __name__ == "__main__":
 
     if getattr(snakemake.params, "osm_remove_rail_systems", False):
         df_lines = _remove_rail_systems(df_lines, asset_label="lines")
+
+    if getattr(snakemake.params, "osm_flag_shared_rail_corridors", False):
+        df_lines = _flag_shared_rail_corridors(df_lines, asset_label="lines")
 
     df_lines.loc[:, "wires"] = _clean_wires(df_lines["wires"])
 
