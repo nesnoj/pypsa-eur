@@ -833,7 +833,7 @@ def _clean_substations(df_substations, list_voltages):
     return df_substations
 
 
-def _remove_rail_systems(df_assets):
+def _remove_rail_systems(df_assets, asset_label="assets"):
     """
     Clean asset data (substations, lines) by removing elements associated with
     rail transport by using these criteria:
@@ -875,6 +875,106 @@ def _remove_rail_systems(df_assets):
     logger.info(
         f"Dropped {len_before - len_after} elements with supposed function "
         f"for railway traffic. Keeping {len_after} elements."
+    )
+
+    return df_assets
+
+
+def _flag_shared_rail_corridors(df_assets, asset_label="assets"):
+    """
+    Flag assets that look like shared public/railway corridors.
+
+    This does NOT remove the assets. It only exports them for review.
+
+    Shared corridor heuristics:
+    - mixed frequency, e.g. 50;16.7
+    - railway operator in one operator field and non-rail operator in another
+
+    Expected optional columns:
+    - operator
+    - operator:2
+    - frequency
+    - geometry
+    - id, voltage, circuits, cables, name, name:2, note
+    """
+    df_assets = df_assets.copy()
+
+    freq = (
+        df_assets.get("frequency", pd.Series("", index=df_assets.index))
+        .fillna("")
+        .astype(str)
+    )
+    op1 = (
+        df_assets.get("operator", pd.Series("", index=df_assets.index))
+        .fillna("")
+        .astype(str)
+    )
+    op2 = (
+        df_assets.get("operator:2", pd.Series("", index=df_assets.index))
+        .fillna("")
+        .astype(str)
+    )
+
+    has_rail_freq = freq.str.contains(r"(?:^|;)16\.7(?:$|;)", regex=True)
+    has_grid_freq = freq.str.contains(r"(?:^|;)50(?:$|;)", regex=True)
+
+    has_rail_operator = (
+        op1.str.contains(RAIL_OPERATOR_REGEX, case=False, na=False, regex=True)
+        | op2.str.contains(RAIL_OPERATOR_REGEX, case=False, na=False, regex=True)
+    )
+
+    has_non_rail_operator = (
+        ((op1 != "") & ~op1.str.contains(RAIL_OPERATOR_REGEX, case=False, na=False, regex=True))
+        | ((op2 != "") & ~op2.str.contains(RAIL_OPERATOR_REGEX, case=False, na=False, regex=True))
+    )
+
+    mask_shared = (has_rail_freq & has_grid_freq) | (
+        has_rail_operator & has_non_rail_operator
+    )
+
+    debug_cols = [
+        c
+        for c in [
+            "id",
+            "operator",
+            "operator:2",
+            "frequency",
+            "voltage",
+            "circuits",
+            "cables",
+            "name",
+            "name:2",
+            "note",
+            "geometry",
+        ]
+        if c in df_assets.columns
+    ]
+
+    shared_assets = df_assets.loc[mask_shared, debug_cols].copy()
+
+    shared_assets.to_csv(
+        f"resources/distribution-grid-experimental/osm/clean/shared_rail_corridors_{asset_label}.csv",
+        index=False,
+    )
+
+    if len(shared_assets) > 0 and "geometry" in shared_assets.columns:
+        if asset_label == "substations":
+            gdf = gpd.GeoDataFrame(shared_assets.copy(), geometry="geometry", crs=crs)
+            gdf.to_file(
+                f"resources/distribution-grid-experimental/osm/clean/shared_rail_corridors_{asset_label}.geojson",
+                driver="GeoJSON",
+            )
+        elif asset_label == "lines":
+            shared_geo = shared_assets.copy()
+            shared_geo["geometry"] = shared_geo.apply(_create_linestring, axis=1)
+            gdf = gpd.GeoDataFrame(shared_geo, geometry="geometry", crs=crs)
+            gdf.to_file(
+                f"resources/distribution-grid-experimental/osm/clean/shared_rail_corridors_{asset_label}.geojson",
+                driver="GeoJSON",
+            )
+
+    logger.info(
+        f"Flagged {len(shared_assets)} shared public/rail corridor elements in {asset_label}."
     )
 
     return df_assets
@@ -1641,7 +1741,6 @@ def _remove_lines_within_substations(gdf_lines, gdf_substations_polygon):
 
     return gdf_lines
 
-
 def _merge_touching_polygons(df):
     """
     Merge touching polygons in a GeoDataFrame.
@@ -1873,8 +1972,8 @@ if __name__ == "__main__":
     )
     df_substations["frequency"] = _clean_frequency(df_substations["frequency"])
 
-    if snakemake.params.osm_remove_rail_systems:
-        df_substations = _remove_rail_systems(df_substations)
+    if getattr(snakemake.params, "osm_remove_rail_systems", False):
+        df_substations = _remove_rail_systems(df_substations, asset_label="substations")
 
     df_substations = _clean_substations(df_substations, list_voltages)
     df_substations = _create_substations_geometry(df_substations)
@@ -1957,9 +2056,15 @@ if __name__ == "__main__":
     df_lines_cables_relation.loc[:, "frequency"] = _clean_frequency(
         df_lines_cables_relation["frequency"]
     )
+
+    if getattr(snakemake.params, "osm_remove_rail_systems", False):
+        df_lines_cables_relation = _remove_rail_systems(
+            df_lines_cables_relation, asset_label="line_relations"
+        )
+
     df_lines_cables_relation = df_lines_cables_relation[
         df_lines_cables_relation["frequency"] != "0"
-    ]
+        ]
     df_lines_cables_relation["frequency"] = "50"
     df_lines_cables_relation.loc[:, "circuits"] = _clean_circuits(
         df_lines_cables_relation["circuits"]
@@ -2070,6 +2175,10 @@ if __name__ == "__main__":
     df_lines.loc[:, "circuits"] = _clean_circuits(df_lines["circuits"])
     df_lines.loc[:, "cables"] = _clean_cables(df_lines["cables"])
     df_lines.loc[:, "frequency"] = _clean_frequency(df_lines["frequency"])
+
+    if getattr(snakemake.params, "osm_remove_rail_systems", False):
+        df_lines = _remove_rail_systems(df_lines, asset_label="lines")
+
     df_lines.loc[:, "wires"] = _clean_wires(df_lines["wires"])
 
     df_lines = _clean_lines(df_lines, list_voltages)
