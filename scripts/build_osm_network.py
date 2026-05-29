@@ -319,7 +319,7 @@ def split_overpassing_lines(lines, buses, distance_crs=DISTANCE_CRS, tol=1):
 
             df_append["line_id"] = [
                 f"{base_id}:{letter}-{voltage}" if n_geoms > 1 else original_line_id
-                for letter in string.ascii_lowercase[:n_geoms]
+                for letter in (string.ascii_lowercase + string.ascii_uppercase)[:n_geoms]
             ]
 
             lines_to_add.append(df_append)
