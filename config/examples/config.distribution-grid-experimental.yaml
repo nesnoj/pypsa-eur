@@ -44,8 +44,12 @@ countries:
 - UA
 
 electricity:
-  voltages: [63., 66., 90., 110., 132., 150., 220., 300., 330., 380., 400., 500., 750.]
+  voltages: [60., 63., 66., 90., 110., 132., 150., 220., 300., 330., 380., 400., 500., 750.]
   base_network: osm
+  osm_remove_rail_systems: true
+
+  # keep but export mixed public/rail shared corridors for review
+  osm_flag_shared_rail_corridors: true
 
 transmission_projects:
   enable: false
